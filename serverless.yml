@@ -1,0 +1,160 @@
+service: serverless-todo-app
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  region: us-east-1
+  stage: dev
+
+  environment:
+    TODOS_TABLE: ${self:service}-todos-${self:provider.stage}
+    ATTACHMENTS_S3_BUCKET: ${self:service}-attachments-${self:provider.stage}
+    TODOS_CREATED_AT_INDEX: CreatedAtIndex
+    AUTH_ISSUER: https://dev-sbplypfz66yta28u.us.auth0.com/
+    AUTH_AUDIENCE: https://serverless-todo-api
+
+plugins:
+  - serverless-iam-roles-per-function
+
+functions:
+
+  Auth:
+    handler: src/lambda/auth/auth0Authorizer.handler
+
+  GetTodos:
+    handler: src/lambda/http/getTodos.handler
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:Query
+        Resource:
+          - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.TODOS_TABLE}
+          - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.TODOS_TABLE}/index/${self:provider.environment.TODOS_CREATED_AT_INDEX}
+    events:
+      - http:
+          path: todos
+          method: get
+          cors: true
+          authorizer: Auth
+
+  CreateTodo:
+    handler: src/lambda/http/createTodo.handler
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:PutItem
+        Resource:
+          - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.TODOS_TABLE}
+    events:
+      - http:
+          path: todos
+          method: post
+          cors: true
+          authorizer: Auth
+          request:
+            schemas:
+              application/json: ${file(models/createTodoSchema.json)}
+
+  UpdateTodo:
+    handler: src/lambda/http/updateTodo.handler
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:UpdateItem
+        Resource:
+          - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.TODOS_TABLE}
+    events:
+      - http:
+          path: todos/{todoId}
+          method: patch
+          cors: true
+          authorizer: Auth
+          request:
+            schemas:
+              application/json: ${file(models/updateTodoSchema.json)}
+
+  DeleteTodo:
+    handler: src/lambda/http/deleteTodo.handler
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:DeleteItem
+        Resource:
+          - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.TODOS_TABLE}
+    events:
+      - http:
+          path: todos/{todoId}
+          method: delete
+          cors: true
+          authorizer: Auth
+
+  GenerateUploadUrl:
+    handler: src/lambda/http/generateUploadUrl.handler
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:UpdateItem
+        Resource:
+          - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.TODOS_TABLE}
+      - Effect: Allow
+        Action:
+          - s3:PutObject
+        Resource:
+          - arn:aws:s3:::${self:provider.environment.ATTACHMENTS_S3_BUCKET}/*
+    events:
+      - http:
+          path: todos/{todoId}/attachment
+          method: post
+          cors: true
+          authorizer: Auth
+
+resources:
+  Resources:
+
+    TodosTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.TODOS_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: userId
+            AttributeType: S
+          - AttributeName: todoId
+            AttributeType: S
+          - AttributeName: createdAt
+            AttributeType: S
+        KeySchema:
+          - AttributeName: userId
+            KeyType: HASH
+          - AttributeName: todoId
+            KeyType: RANGE
+        LocalSecondaryIndexes:
+          - IndexName: ${self:provider.environment.TODOS_CREATED_AT_INDEX}
+            KeySchema:
+              - AttributeName: userId
+                KeyType: HASH
+              - AttributeName: createdAt
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+
+    AttachmentsBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:provider.environment.ATTACHMENTS_S3_BUCKET}
+        CorsConfiguration:
+          CorsRules:
+            - AllowedOrigins:
+                - '*'
+              AllowedHeaders:
+                - '*'
+              AllowedMethods:
+                - GET
+                - PUT
+                - POST
+                - DELETE
+                - HEAD
+              MaxAge: 3000
+        VersioningConfiguration:
+          Status: Enabled
